@@ -1,0 +1,45 @@
+# One image per toolchain. Build with:
+#   docker build -f containers/Dockerfile.toolchain \
+#     --build-arg TOOLCHAIN=leanprover/lean4:v4.22.0 \
+#     -t layer3/lean:v4.22.0 .
+#
+# One image per toolchain rather than one image with many toolchains, because
+# elaboration is sensitive to more than the `lean` binary: the stdlib and its .olean
+# cache ship with the toolchain, and a shared elan root lets a stale cache leak
+# between runs. A container that can only see one toolchain cannot produce a result
+# attributed to the wrong one.
+FROM ubuntu:24.04
+
+ARG TOOLCHAIN
+ARG ELAN_VERSION=v4.1.2
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    ELAN_HOME=/opt/elan \
+    PATH=/opt/elan/bin:$PATH \
+    LAYER3_PINNED_TOOLCHAIN=${TOOLCHAIN}
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates curl git python3 python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Pin elan by tag. Unpinned installer scripts are how a "reproducible" matrix
+# quietly stops being reproducible six months later.
+RUN curl -fsSL "https://raw.githubusercontent.com/leanprover/elan/${ELAN_VERSION}/elan-init.sh" \
+      -o /tmp/elan-init.sh \
+ && sh /tmp/elan-init.sh -y --no-modify-path --default-toolchain "${TOOLCHAIN}" \
+ && rm /tmp/elan-init.sh \
+ && elan default "${TOOLCHAIN}" \
+ && lean --version
+
+WORKDIR /work
+COPY layer3 /work/layer3
+COPY run.py /work/run.py
+
+# Cache the probed pp-option set at build time: it is a property of the toolchain,
+# and probing it per-run costs one elaboration per candidate option per file batch.
+RUN python3 -c "\
+from layer3.normalize import probe_options; import json,sys; \
+json.dump(probe_options(['lean']), open('/work/pp-options.json','w'), indent=1)" \
+ && cat /work/pp-options.json
+
+ENTRYPOINT ["python3", "/work/run.py"]

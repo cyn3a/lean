@@ -1,0 +1,40 @@
+{
+  "_provenance": {
+    "repo": "leanprover/lean4",
+    "ref": "master",
+    "measured": "2026-07-27",
+    "scope": "tests/elab + tests/elab_fail, *.lean.out.expected",
+    "method": "regex over diagnostic headers; see layer3/corpora/expected_out.py",
+    "caveat": "Realization coverage on an adversarially-enriched corpus. Evidence about which messages carry stable identifiers, NOT about how often users hit them."
+  },
+  "totals": {
+    "expected_files_scanned": 1076,
+    "files_with_diagnostics": 628,
+    "messages": 2033,
+    "named": 165,
+    "named_fraction": 0.0812,
+    "distinct_names": 10,
+    "severity": {"warning": 1067, "error": 966, "information": 0}
+  },
+  "directory_layout": {
+    "tests/elab": {"expected_files": 760, "with_diagnostics": 314, "format": "text"},
+    "tests/elab_fail": {"expected_files": 314, "with_diagnostics": 314, "format": "text"},
+    "tests/docparse": {"expected_files": 202, "format": "text"},
+    "tests/server_interactive": {"expected_files": 144, "format": "json-pairs"},
+    "tests/compile": {"expected_files": 60, "format": "text"},
+    "tests/compile_bench": {"expected_files": 23, "format": "text"},
+    "other": {"expected_files": 9}
+  },
+  "names": {
+    "lean.unknownIdentifier": 84,
+    "lean.inferBinderTypeFailed": 39,
+    "lean.synthInstanceFailed": 23,
+    "lean.inferDefTypeFailed": 7,
+    "lean.invalidDottedIdent": 4,
+    "lean.dependsOnNoncomputable": 2,
+    "lean.redundantMatchAlt": 2,
+    "lean.inductionWithNoAlts": 2,
+    "lean.invalidField": 1,
+    "lean.ctorResultingTypeMismatch": 1
+  }
+}
