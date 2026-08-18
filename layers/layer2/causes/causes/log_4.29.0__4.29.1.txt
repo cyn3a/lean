@@ -1,5 +1,0 @@
-
---- stderr ---
-consts=0 syntax=0 options=0 instances=0 deprecations=0 attrs=0 tactics=0 tokens=0 simp=0/0
---- cause histogram (cause  count  predicted error class) ---
-TOTAL BREAKS = 0

@@ -1,3 +1,0 @@
-{"cause":"meta","class":"unclassified","detail":"base=4.20.0 (69893 consts) target=4.20.0 (69892 consts)","name":"diff","sev":"info"}
-{"cause":"const.absent","class":"unknown constant / unknown identifier","detail":"def, arity 1","name":"Lean.addDecl.addSynchronously","sev":"break"}
-{"cause":"const.type-changed","class":"type mismatch","detail":"type fingerprint differs","name":"Lean.addDecl.doAdd","sev":"break"}
