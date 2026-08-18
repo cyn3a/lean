@@ -1,0 +1,7 @@
+
+--- stderr ---
+consts=2 syntax=0 options=0 instances=0 deprecations=0 attrs=0 tactics=0 tokens=0 simp=0/0
+--- cause histogram (cause  count  predicted error class) ---
+1	const.type-changed	type mismatch
+1	const.absent	unknown constant / unknown identifier
+TOTAL BREAKS = 2

@@ -1,0 +1,27 @@
+
+--- stderr ---
+consts=2471 syntax=19 options=3 instances=212 deprecations=284 attrs=2 tactics=0 tokens=1 simp=112/3
+--- cause histogram (cause  count  predicted error class) ---
+1171	const.absent	unknown constant / unknown identifier
+874	const.type-changed	type mismatch
+284	deprecation.alias-absent	unknown identifier (compat alias not yet introduced)
+272	const.arity-changed	function expected / too many arguments
+212	instance.absent	failed to synthesize instance
+112	simp.lemma-absent	simp made no progress / unsolved goals
+49	const.fields-changed	unknown field / structure instance missing field
+41	const.renamed	unknown identifier (moved to a new name)
+24	const.reducibility-changed	unfold/simp/defeq behaviour change (silent or 'motive is not type correct')
+16	const.ctors-changed	unknown constructor / non-exhaustive match
+16	syntax.kind-absent	elaboration function for syntax kind not found
+9	const.kind-changed	invalid unfold / 'not a definition' / rfl failure
+8	const.binders-changed	type mismatch / unknown named argument / implicit mismatch
+3	simp.unfold-absent	simp made no progress / unsolved goals
+3	syntax.token-absent	unexpected token / unexpected identifier
+3	const.universes-changed	universe level mismatch
+2	option.absent	unknown option
+2	attr.absent	unknown attribute
+2	const.protected-changed	unknown identifier (now needs qualification)
+2	const.class-changed	'not a class' / failed to synthesize instance
+1	token.absent	unexpected token
+1	option.default-changed	silent behaviour change (no error, different result)
+TOTAL BREAKS = 3107
