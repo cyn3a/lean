@@ -1,0 +1,186 @@
+{
+  "windows": [
+    {
+      "kind": "dep-adaptation",
+      "key": "batteries#1921",
+      "source": "squash",
+      "ref": "chore: adaptations for batteries#1921 (#42013)",
+      "base": "b5d557f7df250b0a7476c30778a3b17a1e448a26",
+      "tip": "1b92f9f3413674899dbec743da67a884ffd76a21",
+      "date": "2026-07-23",
+      "pr": "42013",
+      "toolchain_before": "leanprover/lean4:v4.33.0-rc1",
+      "toolchain_after": "leanprover/lean4:v4.33.0-rc1"
+    },
+    {
+      "kind": "bump",
+      "key": "v4.33.0-rc1",
+      "source": "squash",
+      "ref": "chore: bump toolchain to v4.33.0-rc1 (#41779)",
+      "base": "3dffaf2f18b47d11948f6390838ea6f2ae662aaf",
+      "tip": "79d0395a1825a6264ad5d269e35e60537518955e",
+      "date": "2026-07-16",
+      "pr": "41779",
+      "toolchain_before": "leanprover/lean4:v4.32.0",
+      "toolchain_after": "leanprover/lean4:v4.33.0-rc1"
+    }
+  ],
+  "config": {
+    "cmd": "mine",
+    "repo": "/home/claude/ml4",
+    "clone_url": null,
+    "mainline": "master",
+    "windows": "/tmp/final/w.jsonl",
+    "modes": [
+      "squash",
+      "branch"
+    ],
+    "limit": null,
+    "max_windows": null,
+    "context": 6,
+    "max_hunk_lines": 60,
+    "min_confidence": 0.0,
+    "keep_noise": false,
+    "cap_per_label": 2000,
+    "keep_per_signature": 3,
+    "cap_per_signature": 8,
+    "split": true,
+    "split_by": "decl",
+    "seed": 0,
+    "out": "/tmp/final"
+  },
+  "report": {
+    "total": 466,
+    "distinct_labels": 23,
+    "by_label": [
+      {
+        "label": "rename.open_scope",
+        "n": 141,
+        "pct": 30.26
+      },
+      {
+        "label": "elab.instance_reducibility",
+        "n": 101,
+        "pct": 21.67
+      },
+      {
+        "label": "auto.simp_lemma_removed",
+        "n": 82,
+        "pct": 17.6
+      },
+      {
+        "label": "elab.defeq_transparency",
+        "n": 32,
+        "pct": 6.87
+      },
+      {
+        "label": "auto.simp_lemma_added",
+        "n": 24,
+        "pct": 5.15
+      },
+      {
+        "label": "rename.decl",
+        "n": 17,
+        "pct": 3.65
+      },
+      {
+        "label": "auto.tactic_removed",
+        "n": 15,
+        "pct": 3.22
+      },
+      {
+        "label": "rename.namespace",
+        "n": 9,
+        "pct": 1.93
+      },
+      {
+        "label": "auto.attribute_delta",
+        "n": 7,
+        "pct": 1.5
+      },
+      {
+        "label": "auto.proof_rewrite",
+        "n": 7,
+        "pct": 1.5
+      },
+      {
+        "label": "meta.unknown",
+        "n": 5,
+        "pct": 1.07
+      },
+      {
+        "label": "auto.tactic_swap",
+        "n": 4,
+        "pct": 0.86
+      },
+      {
+        "label": "auto.tactic_added",
+        "n": 4,
+        "pct": 0.86
+      },
+      {
+        "label": "meta.adaptation_note",
+        "n": 4,
+        "pct": 0.86
+      },
+      {
+        "label": "elab.type_ascription",
+        "n": 3,
+        "pct": 0.64
+      },
+      {
+        "label": "rename.attribute",
+        "n": 2,
+        "pct": 0.43
+      },
+      {
+        "label": "lint.other",
+        "n": 2,
+        "pct": 0.43
+      },
+      {
+        "label": "elab.coercion",
+        "n": 2,
+        "pct": 0.43
+      },
+      {
+        "label": "elab.named_argument",
+        "n": 1,
+        "pct": 0.21
+      },
+      {
+        "label": "auto.term_wrapped",
+        "n": 1,
+        "pct": 0.21
+      },
+      {
+        "label": "lint.disabled",
+        "n": 1,
+        "pct": 0.21
+      },
+      {
+        "label": "rename.import",
+        "n": 1,
+        "pct": 0.21
+      },
+      {
+        "label": "elab.universe",
+        "n": 1,
+        "pct": 0.21
+      }
+    ],
+    "top_label_share": 30.26,
+    "by_window": {
+      "v4.33.0-rc1": 465,
+      "batteries#1921": 1
+    },
+    "distinct_files": 338,
+    "distinct_decls": 326,
+    "splits": {
+      "train": 373,
+      "val": 47,
+      "test": 46
+    },
+    "split_by": "decl"
+  }
+}

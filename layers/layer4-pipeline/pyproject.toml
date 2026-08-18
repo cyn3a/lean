@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "layer4"
+version = "0.1.0"
+description = "Free supervised repair labels mined from Lean/mathlib toolchain-adaptation diffs"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+layer4 = "layer4.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["layer4*"]
