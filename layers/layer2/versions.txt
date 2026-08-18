@@ -1,0 +1,33 @@
+# One Lean version per line; '#' lines ignored. Build-Chain.ps1 diffs each
+# consecutive pair (4.16 -> 4.18 -> 4.20 -> ...), so the hops are only as
+# fine-grained as this list. For a true per-release changelog, list EVERY
+# release; for a coarse migration map, list only the ones you might land on.
+#
+# Verified in this toolset: 4.16.0 (legacy dumper), 4.24.0 and 4.32.0 (modern
+# dumper, auto-selected). Versions below 4.16 are unverified and may hit further
+# API breakpoints; the script flags any version where both dumpers fail.
+
+4.16.0
+4.17.0
+4.18.0
+4.19.0
+4.20.0
+4.20.1
+4.21.0
+4.22.0
+4.23.0
+4.24.0
+4.24.1
+4.25.0
+4.25.1
+4.25.2
+4.26.0
+4.27.0
+4.28.0
+4.28.1
+4.29.0
+4.29.1
+4.30.0
+4.31.0
+4.32.0
+4.32.1
