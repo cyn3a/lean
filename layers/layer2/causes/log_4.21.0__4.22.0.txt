@@ -1,0 +1,23 @@
+
+--- stderr ---
+consts=2876 syntax=7 options=5 instances=83 deprecations=0 attrs=0 tactics=0 tokens=3 simp=83/0
+--- cause histogram (cause  count  predicted error class) ---
+1458	const.type-changed	type mismatch
+764	const.absent	unknown constant / unknown identifier
+396	const.arity-changed	function expected / too many arguments
+83	simp.lemma-absent	simp made no progress / unsolved goals
+82	instance.absent	failed to synthesize instance
+75	const.universes-changed	universe level mismatch
+60	const.fields-changed	unknown field / structure instance missing field
+51	const.renamed	unknown identifier (moved to a new name)
+23	const.reducibility-changed	unfold/simp/defeq behaviour change (silent or 'motive is not type correct')
+18	const.ctors-changed	unknown constructor / non-exhaustive match
+16	const.binders-changed	type mismatch / unknown named argument / implicit mismatch
+14	const.kind-changed	invalid unfold / 'not a definition' / rfl failure
+7	syntax.kind-absent	elaboration function for syntax kind not found
+4	option.default-changed	silent behaviour change (no error, different result)
+3	token.absent	unexpected token
+1	const.protected-changed	unknown identifier (now needs qualification)
+1	instance.priority-changed	wrong instance selected / diamond ambiguity
+1	option.absent	unknown option
+TOTAL BREAKS = 3057
