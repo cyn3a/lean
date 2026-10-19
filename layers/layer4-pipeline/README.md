@@ -1,273 +1,522 @@
-# layer4 — free supervised repair labels from Lean/mathlib adaptation diffs
+# Lean version-transition build pipeline
 
-Layer 4 of an error-taxonomy pipeline. It mines toolchain-adaptation diffs from
-mathlib4 history and turns each one into labelled `(broken, fixed)` repair
-pairs plus **reversible breakage rules**.
+This pipeline processes the 3,265 repositories in
+`../lean-multi-toolchain-repos/qualifying-repositories.csv` and checkpoints every
+repository, commit pair, native build, and adapted build.
 
-The premise: a forward adaptation diff is already a repair. Read backwards it
-is a *generator* — `post → pre` rewrites working code into code known to fail
-under the new toolchain, with the correct repair attached. So one mined hunk
-does not yield one training example; it yields a rule applicable at every
-matching site in a current checkout.
+The run phase processes different repositories concurrently. Pairs belonging to
+the same repository remain serialized so Git worktrees and repository metadata
+cannot race. The default is two workers.
 
-Stdlib only. No third-party runtime dependencies.
+## What it does
 
----
+1. Reads every root `lean-toolchain` change on the current default branch.
+2. For each newer version boundary, checks successively older boundaries until
+   `git diff --name-only` finds a change outside:
+   - `lean-toolchain`
+   - `lake-manifest.json`
+   - `lakefile.toml`
+   - `lakefile.lean`
+3. Records the selected old/new commit and exact toolchain strings. Fallback
+   selection skips boundaries with the same toolchain as the newer commit.
+   Identical-toolchain pairs and moving aliases such as `stable` or undated
+   `nightly` are ineligible: their historical environment is not reproducible.
+4. Creates detached `old` and `new` worktrees and runs each commit in its
+   original toolchain:
 
-## Reality check before you wire this in
+   ```text
+   lake exe cache get
+   lake build
+   ```
 
-Three things were verified against `leanprover-community/mathlib4` on
-2026-07-28, and two of them contradict the obvious approach.
+   The cache command is an optimization; native validity is determined by the
+   build. Every cache/update/build process pins `ELAN_TOOLCHAIN` to the expected
+   committed version; the toolchain file is checked before and after execution.
+   When supported, every Lake command receives `--keep-toolchain`, so a
+   missing manifest cannot silently switch the checkout to another Lean
+   release. Old Lake versions are probed and run without that newer option.
+   If Lake requests a manifest refresh, the pipeline runs `lake update` and
+   retries without changing the committed toolchain. Supported Lake releases
+   use verbose build output. Passing checks require successful completion,
+   confirmed toolchain identity, and positive evidence of built Lean modules;
+   a bare success banner is insufficient. New logs record root `.olean` counts.
+   Explicitly optional binary-release download failures followed by source
+   builds are not mistaken for required-job failures.
+   Git submodules are initialized before the build.
 
-**1. `bump/v4.X.0` and `lean-pr-testing-NNNN` branches no longer exist.**
-`git ls-remote --heads` returns 772 branches and **zero** matching either
-pattern. Both are ephemeral and get deleted after use. Live infra branches now
-use different conventions (`bump_to_v4.28.1`, `last_bump_for_v4.31.0`), and
-`nightly-testing` is absent too. Branch-based mining alone will return nothing.
+   A compiler/project failure discards the pair. A timeout, interruption,
+   network/download failure, dependency checkout failure, disk/memory problem,
+   or path-length failure is instead recorded as `native_inconclusive`; it is
+   never mistaken for evidence that the commit itself is broken. Inconclusive
+   native checks are retried from a clean worktree before being paused. The
+   resolved manifest produced by a passing native build is checkpointed and
+   restored after build artifacts are cleaned, including when the manifest was
+   not committed to Git.
 
-**2. Merge-topology mining also returns nothing.** mathlib4 master has **7
-merge commits in its entire history**, all from 2021. Bump branches are
-squash-merged.
+   Paused `native_inconclusive` checks are kept out of adaptation. Retry them on
+   a later run with `--retry-native-failures` after machine issues have been
+   resolved. A native check whose required setup output shows a network failure
+   is not recorded at all: the pair stays `pending` (see "Network failures").
+5. Restores both passing worktrees to their exact commits, creates a clean target
+   from the old commit, and runs:
 
-**3. What *is* durable is the squashed commit on master.** A bump branch
-collapses to a single commit like `chore: bump toolchain to v4.33.0-rc1
-(#41779)` — 2433 files, 8421 insertions, 2018 deletions, one toolchain
-transition. Discovery is therefore message- and toolchain-anchored on master,
-with live branches as an opportunistic secondary source. On the real repo this
-finds **131 windows** (88 bumps, 36 dependency adaptations, 7 backports), all
-with resolved `toolchain_before` / `toolchain_after` pairs.
+   ```text
+   lakeva adapt OLD NEW TARGET
+   lake exe cache get
+   lake build
+   ```
 
-Discovery modes are independent and can be cross-checked against each other:
+6. Parses Lean errors. Each compiler diagnostic is written as its own JSON file
+   under `parsed-errors/`, with the exact source line and four surrounding lines
+   on each side when the source is available. Each file also contains the
+   repository, old/new versions, old/new commits, and pair identity.
+7. Writes `pairs-without-lean-errors.jsonl`, with one record only for every pair
+   whose adapted build completed successfully, compiled at least one target,
+   and produced zero Lean diagnostics. Failed, empty, interrupted, and
+   infrastructure-only builds are excluded.
 
-| mode | signal | use |
-|---|---|---|
-| `squash` | commit message regex | default; durable |
-| `toolchain` | `lean-toolchain` blob changed | message-independent cross-check |
-| `branch` | live ref name patterns | in-flight adaptations, if any exist |
-| `merge` | merge topology | forks that really do merge (not mathlib4) |
+An environment-adapter failure is recorded in the progress database and its raw
+log remains under `state/runs/`; it is not a Lean compiler error and therefore is
+not written to `parsed-errors/`.
 
----
+Build output is saved directly as `build.log`. Failed infrastructure attempts
+are retained alongside it in the native-check directory. Retries preserve old
+logs under that run/check's `history/` directory. Diagnostic source files are
+snapshotted before temporary checkouts are removed, so reparsing retains the
+actual adapted source, including generated files and dependency sources.
 
-## Install
+On Windows, disposable worktrees default to a short, state-specific directory
+under `%TEMP%\lvp` and every Lake-spawned Git process receives
+`core.longpaths=true`. This avoids the dependency checkout failures caused by
+the much deeper state-directory path and keeps separate pipeline state files
+from sharing temporary checkouts.
 
-```bash
-pip install -e .          # or just put layer4/ on PYTHONPATH
-python -m layer4 --help
+## Throughput and disk usage
+
+Measured on the first ~650 processed pairs, native validation of the two
+endpoints took ~85% of the run time, yet only ~13% of eligible pairs produced
+Lean diagnostics. The run phase therefore defaults to **target-first**:
+
+1. Check out old/new (no build), adapt the old commit, and build the target.
+2. Only if the adapted build produced Lean diagnostics (or with
+   `--validate-clean-pairs`) are the old and new commits built natively, with
+   the built target removed first to free disk. Errors are exported only after
+   both native checks pass, exactly as before. If a native build had to
+   refresh a stale committed manifest, the adapted build is repeated in that
+   exact environment.
+3. A clean adapted build without native validation is recorded as
+   `unvalidated` and is not written to `pairs-without-lean-errors.jsonl`. Run
+   once with `--validate-clean-pairs` to complete those pairs.
+
+When either commit has no `lake-manifest.json`, the pair falls back to the old
+native-first order, because the manifest only exists after a native build.
+`--native-first` restores the old order for every pair.
+
+Pending pairs are run in order of expected yield: forward bumps of 1-3 Lean
+minor releases first, then larger jumps/downgrades, then nightly or non-semver
+toolchains, and last same-minor (patch/rc) transitions and pairs whose diff
+touches no `.lean` file (none of the latter produced a Lean error so far).
+`--skip-low-yield` drops the last group. Pairs with equal priority are grouped
+by toolchain, so installs are reused. `--target-error-files N` stops
+scheduling new pairs once `parsed-errors/` holds N files.
+
+Pairs whose old commit is Mathlib itself (a fork with `Mathlib.lean` and
+`Mathlib/Tactic` at its root) are marked `ineligible_pair / mathlib-itself`
+before any checkout: adapting them means compiling all of Mathlib without a
+cache, which exceeds the build timeout. `--include-mathlib` requeues them.
+
+A native build that hits its time limit is no longer retried (it will hit the
+limit again), and the default `--native-timeout`/`--build-timeout` is one
+hour. `lake exe cache get` runs only when Mathlib is in the manifest.
+
+Disk usage is bounded between pairs:
+
+- `--max-toolchains 12`: elan keeps every toolchain it installs (0.5-2.5 GB
+  each). The least recently used pipeline toolchains beyond this count are
+  removed; elan reinstalls one on demand. The elan default, elan overrides,
+  `--protect-toolchain` values, toolchains of running pairs, and those of the
+  next few scheduled pairs are never removed. Toolchains that never occur in
+  the pair table are never touched. `0` disables this.
+- `--mathlib-cache-max-gb 15`: the oldest `.ltar` files in Mathlib's download
+  cache are pruned, never while a `cache get` is running. `0` disables this.
+- On Windows, `state/runs` and `state/native-checks` are NTFS-compressed once
+  (new logs inherit it); `--no-compress-logs` disables this. The final native
+  attempt log is moved, not copied, to its stable name.
+
+### Local dependency mirrors
+
+Lake clones Mathlib (a 525 MB pack) and a handful of small dependencies from
+GitHub into every old, new, and target worktree. The pipeline therefore keeps
+local bare mirrors under `--dep-mirror-root` (default
+`%USERPROFILE%\.cache\lvp-dep-mirrors`, on the same volume as `%TEMP%` so
+clones hardlink the packs instead of copying them) and seeds each worktree
+from them before Lake runs. Only these URLs are mirrored (matched after
+lowercasing and stripping a trailing `/` or `.git`): mathlib4, batteries,
+std4, aesop, quote4, import-graph, lean4-cli, plausible, LeanSearchClient.
+ProofWidgets is never mirrored because its `preferReleaseBuild` download reads
+the remote URL; every other dependency is left to Lake.
+
+A mirror is created on first use (`git clone --bare`, tracking every branch
+and tag but not GitHub's pull-request refs), refreshed once at the start of
+every run, and refreshed on demand when a manifest revision is missing from it
+(`git fetch --prune`, then a fetch by hash). A per-mirror lock keeps two
+workers from fetching the same mirror at once. Seeding reads the worktree's
+`lake-manifest.json` (manifest versions 4-7 and the `1.x.0` string versions,
+with the `packagesDir` the manifest names) and, for every allowlisted package
+whose directory does not exist yet, clones from the mirror with `--no-checkout`,
+sets `origin` to the manifest's exact URL string, and detaches `HEAD` at the
+manifest's revision. Lake then finds an up-to-date checkout whose remote
+matches and does nothing (`updateGitRepo` in Lake's `Load/Materialize.lean`);
+lakeva's `lake update <pkg>` reuses the same directory and fetches only the
+delta. Seeding happens in every native-check attempt and in the target before
+`lakeva adapt`; old/new trees used only as adaptation sources are not seeded.
+Each seed is logged (`# seeded: <name> <rev> from mirror ...`) in
+`seed-attempt-NN.log` of the native check or `seed.log` of the run. Any mirror
+failure (including a network failure, which is reported to the network
+watchdog) only logs `# not seeded`, removes the partial directory, and lets
+Lake clone as before; it never fails the pair. Mirrors are never deleted by
+the janitors; `--status` shows their count and size. `--no-dep-mirror`
+disables all of this.
+
+### Background worktree deletion
+
+Removing a multi-GB target worktree idled a worker for 5-8 minutes after a big
+build. Finished worktrees are now renamed into `<worktrees-root>\.trash\`
+(an instantaneous same-volume rename; `git worktree remove --force` then only
+drops the metadata) and deleted by a single daemon janitor thread. If the
+rename fails, the worktree is deleted inline as before. Before starting a new
+pair, a worker waits while more than `--trash-max-gb` (default 20) of
+discarded data is still queued. After a normal completion the run waits for
+the janitor to finish; after an interruption the remaining trash is left in
+place and swept at the next startup (inline when `--no-async-cleanup` is
+set, which disables the background deletion entirely). `git worktree prune`
+runs per pair as before.
+
+### Reuse across forks
+
+19% of queued pairs are fork duplicates: another repository has a pair with the
+same `(old_hash, new_hash, old_version, new_version)`. Building the same
+commits under the same toolchains gives the same result, so the pipeline
+copies instead of rebuilding (`--no-fork-reuse` disables this):
+
+- Native checks: when `(repo, commit)` has no row, a `passed` row of another
+  repository for the same commit and toolchain that still satisfies the
+  evidence rules and has its manifest snapshot, or a `failed` row with its
+  build log, is copied: the log directory (logs and `lake-manifest.json`) is
+  copied into this repository's native-check directory with a
+  `provenance.json` (`source_repo`, `source_commit`, `source_log_dir`,
+  `copied_at`), and the row is inserted with the same status and exit codes.
+  Inconclusive results are never copied this way.
+- Pairs: before any worktree is created, a finished twin that is `completed`
+  (`build-errors` or `build-succeeded`), `unvalidated`, or `adapt_failed`
+  (`lakeva-adapt-failed`, `adapted-submodule-setup-failed`) at the current
+  result version, whose run directory still holds `build.log` (and, for
+  build-errors, `diagnostic-sources.json` plus every exported error file), is
+  copied into this pair's run directory with `provenance.json`
+  (`source_pair_id`, `source_repo`). This pair's error files are regenerated
+  from the copied log and source snapshot, so they carry this repository,
+  pair id, pair index, hashes, and versions; the number of files must equal
+  the source's export count. The repair diff is taken from this repository's
+  own clone. For `completed` twins both native rows must exist for this
+  repository (via the native reuse above); otherwise nothing is copied and the
+  pair is processed normally. `unvalidated` twins are not reused when
+  `--validate-clean-pairs` is set. The pair row is updated as
+  `finish_adapted_pair` would (`last_stage='reused-from-fork'`, exit codes,
+  result version, error export). Inconclusive, network-failure,
+  `pipeline_failed`, and `discarded_native` results are never reused.
+- Scheduling: a pair whose key is currently running in another worker is
+  deferred so the later one can reuse the first's result.
+
+Reused pairs count like any other in `pairs-without-lean-errors.jsonl` and
+`--status` (which also prints the number of reused pairs).
+
+### Skipping builds that are certain to time out
+
+`--no-timeout-prediction` disables both parts. The results stay retryable
+with `--retry-native-failures` / `--retry-build-inconclusive`.
+
+1. Duplicate timeouts. If another repository's native check of the same
+   commit and toolchain is `inconclusive` with build exit code 124, or a twin
+   pair ended `build_inconclusive / adapted-build-incomplete` with exit code
+   124, this one is recorded the same way without running the build: the
+   `build.log` holds only `# skipped: duplicate of <repo>/<commit or pair>
+   timed out`, the source path, and `# exit_code: 124`, next to a
+   `provenance.json` (`last_stage='skipped-duplicate-timeout'` for pairs).
+2. ProofWidgets cascade. All one-hour timeouts on Lake < v4.16 with Mathlib
+   happened when ProofWidgets had to be rebuilt, which invalidates every cached
+   Mathlib artifact. After a successful `lake exe cache get`, and only when
+   the toolchain is a release or rc below v4.16.0 (nightlies are not
+   predicted), the manifest names both `mathlib` and `proofwidgets`, and
+   `lake --help` lists `--no-build` (Lake v4.8+), the pipeline runs
+   `lake build +ProofWidgets.Compat --no-build` with a 300 s limit, logged to
+   `predict.log`. Lake's no-build exit code (3) means ProofWidgets is out of
+   date: the pair is recorded as `build_inconclusive / predicted-build-timeout`
+   (the native check as `inconclusive`, its pair as `native_inconclusive /
+   predicted-build-timeout`) and the build is skipped. Exit 0 and every other
+   exit code build normally. `--repair-results` keeps these records.
+
+### Repair diffs and finished clones
+
+For every pair with Lean errors, the old->new commit diff (excluding `.lake/`)
+is saved as `repair-diffs/<repo>__<pair_id>.diff.gz`. The error reports hold
+only the broken code; this diff is the candidate repair for the repair corpus.
+Missing diffs are backfilled at the start of each run.
+
+`--delete-finished-repos` deletes a repository clone once none of its pairs is
+pending, running, `native_inconclusive`, `build_inconclusive`, or
+`pipeline_failed`, and none of its pairs produced Lean errors. Clones with
+error pairs are kept, because minimizing a repair means rebuilding the old
+commit with selected diff hunks applied; clones with paused or failed pairs are
+kept because the `--retry-*` flags need them. Deleted repositories are marked
+in the database: discovery keeps their saved pairs, and their pairs are skipped
+by later runs until `--restore-deleted-clones` re-clones every deleted
+repository that still has such pairs, using the manifest's URL and clone mode,
+and resets its `clone_deleted` flag. Pairs left pending by `--skip-low-yield`
+keep their clone.
+
+### Network failures
+
+The clones are blobless, so even `git worktree add` fetches file contents from
+GitHub. A failure whose output shows that the network or the remote was
+unreachable (`Could not resolve host`, `Failed to connect`, promisor fetch
+failures, download errors, ...) during worktree creation, `lakeva adapt`, or a
+native check is not a result about the pair: the pair is returned to `pending`
+with outcome `network-failure` and is retried by the next run without any flag.
+No native-check row is stored for a network-interrupted check.
+
+Repeated network failures pause the run instead of marking every queued pair.
+After `--network-failure-limit` consecutive failures (default 5) the pipeline
+connects to `github.com`; if that fails, the run stops exactly as after an
+interruption, with exit code 75, and the affected pairs stay `pending`. If
+`github.com` is reachable, the failures concerned individual remotes and the
+count restarts. `0` disables the pause.
+
+Paths Git cannot create on this platform (Windows device names such as
+`Aux.lean` or `Con.lean`, `:` or `?` in a name) are recorded as
+`ineligible_pair / invalid-path-on-platform`; they can only be processed on a
+different operating system.
+
+The first run of this version converts stored results that recorded only a
+network outage: such `pipeline_failed`, `adapt_failed`, inconclusive adapted
+builds, and inconclusive native checks become `pending / network-failure`, and
+invalid-path failures become `ineligible_pair`.
+
+The first run after this change performs the initial trim before any build
+starts, which can take a while on a machine with many installed toolchains.
+
+## Safety
+
+Lake configuration is executable code. Running this across public GitHub
+repositories executes untrusted code with your user account's permissions. Use
+an isolated machine or sandbox. The run phase refuses to start unless you pass
+`--acknowledge-untrusted-builds`.
+
+## Run
+
+From PowerShell:
+
+```powershell
+cd C:\Users\Cynthia\Documents\Codex\2026-09-20\i-w\outputs\lean-version-build-pipeline
+
+# Discover and checkpoint all version pairs without executing Lake code.
+.\run_pipeline.ps1 --phase discover
+
+# Run native checks, adaptation, builds, and parsing.
+.\run_pipeline.ps1 --phase run --acknowledge-untrusted-builds
 ```
 
-Clone the corpus **with trees local**:
+Tune concurrency for the machine:
 
-```bash
-git clone --filter=blob:none --no-checkout --single-branch \
-  --branch master https://github.com/leanprover-community/mathlib4.git
+```powershell
+# Recommended starting point; this is also the default.
+.\run_pipeline.ps1 --phase run --workers 2 --acknowledge-untrusted-builds
+
+# On a machine with ample RAM, CPU, and fast storage.
+.\run_pipeline.ps1 --phase run --workers 4 --acknowledge-untrusted-builds
+
+# Preserve the previous fully sequential behavior.
+.\run_pipeline.ps1 --phase run --workers 1 --acknowledge-untrusted-builds
 ```
 
-Do **not** use `--filter=tree:0`. A treeless clone makes every path-filtered
-history walk lazily fetch one tree per commit; `git log -- lean-toolchain`
-times out past 300s. `Git.check_clone_health()` warns about this and about
-shallow clones.
+Each Lake build can itself use several cores, so increasing `--workers` too far
+can make the run slower through memory pressure and disk contention. Start with
+two; compare four only if the machine remains responsive.
 
----
+Or perform both phases in one invocation:
 
-## Pipeline
-
-```bash
-python -m layer4 discover --repo ./mathlib4 -o out/windows.jsonl
-python -m layer4 mine     --repo ./mathlib4 -w out/windows.jsonl -o out/
-python -m layer4 rules    --pairs out/pairs.jsonl -o out/rules.jsonl
-python -m layer4 synth    --repo ./mathlib4 --rules out/rules.jsonl -n 5000
-python -m layer4 replay   --repo ./mathlib4 --pairs out/pairs.jsonl --limit 200
-python -m layer4 stats    --pairs out/pairs.jsonl
+```powershell
+.\run_pipeline.ps1 --acknowledge-untrusted-builds
 ```
 
-`discover → mine → rules` is free and offline-after-clone. `synth` multiplies
-the corpus. `replay` is the only stage needing a real toolchain.
+Re-run the identical command after interruption. Any pair that was `running` is
+automatically returned to `pending`; completed work and native checks are reused.
+Parallel interruption terminates active child processes and returns their pairs
+to `pending` before exit.
 
----
+The first run of a repaired version backs up the database and exported files in
+`state/backups/`. It invalidates older native results whose evidence fails the
+current validation rules and requeues affected pairs. It also
+re-parses completed build logs when the report format changes, removing stale
+or malformed error files. Passing native checks and completed adapted analyses
+that still satisfy the stricter evidence rules remain cached.
 
-## Two label spaces, kept separate
+Inspect progress without building:
 
-**`RepairLabel`** — what the fix *did*. Derived from the diff alone, hence free.
-**`ErrorClass`** — what the broken side is *predicted* to emit.
-
-Every pair carries `expected_errors`. `replay` observes the real diagnostics and
-scores agreement, so the free labels get a measured trust score rather than an
-assumed one. Label ids are stable strings, not enum ordinals — remap them onto
-your layers 1–3 taxonomy without touching the classifier.
-
-Label families: `rename.*` (decl, namespace, attribute, open-scope, import,
-deprecation), `elab.*` (defeq transparency, instance reducibility, ascription,
-named args, universes, coercion, binder syntax), `auto.*` (simp-set add /
-remove / reorient, tactic swap, term wrapper, proof rewrite), `perf.*`
-(heartbeats, recursion depth, synth budget), `lint.*`, `meta.*`.
-
-Classification is multi-label. `elab.instance_reducibility +
-rename.attribute` and `rename.open_scope + rename.namespace` are the common
-genuine pairings.
-
-### Measured on the real v4.33.0-rc1 bump
-
-8028 hunks, 24 labels, **0.15% residual** (7 `auto.proof_rewrite`, 5
-`meta.unknown`). The catch-all bucket started at 38 hunks; three rules
-(`open_scope_delta`, `lemma_list_fragment`, `inline_tactic_swap`) plus a
-term-wrapper split reduced it to 7.
-
----
-
-## The two things that will silently wreck the dataset
-
-### Class collapse
-
-That single bump is **81% one label** — mechanical `set_option
-backward.isDefEq.respectTransparency[.types] false in` insertions — plus 14%
-`@[implicit_reducible]` → `@[instance_reducible]`. Emitted raw, a repair model
-learns to insert a `set_option` and nothing else.
-
-`dedup` collapses identical edit shapes (whitespace- and comment-insensitive),
-`--keep-per-signature N` retains N *contextually distinct* copies, and
-`--cap-per-label` bounds the rest. Measured effect on that bump: 8075 raw →
-496 unique, top-label share **81% → 30%**, across 353 files and 346
-declarations. `duplicate_count` preserves the true frequency for reweighting.
-
-### Leakage
-
-The same rename appears in hundreds of hunks across hundreds of files, so a
-random split puts near-duplicates on both sides. `--split-by` is group-disjoint
-and defaults to `toolchain`, which additionally orders chronologically: train
-on past bumps, test on the newest one. That matches deployment. Other keys:
-`window`, `commit`, `file`, `decl`, `signature`.
-
-Mining a single bump gives one toolchain group, which cannot fill three
-buckets. Rather than silently write empty `val.jsonl` / `test.jsonl`, the
-splitter walks down `toolchain → window → commit → decl → file → signature`
-until a key yields at least three groups, and warns which one it used. If you
-see that warning, mine more windows — a same-bump split is a much weaker
-evaluation than a forward-in-time one.
-
----
-
-## Reversal
-
-`rules.jsonl` holds two rule strengths:
-
-- **`substitution`** — a consistent 1-for-1 token mapping. Reversible and
-  applicable anywhere the token occurs. High yield.
-- **`window`** — a literal pre/post text slice. Applies only where the exact
-  post text occurs. Low yield, high fidelity.
-
-`synth` applies reversed rules to a clean checkout and **round-trip validates**
-every sample: reverse then forward must restore the original byte-for-byte, or
-the sample is dropped.
-
-Two subtleties worth knowing, both found by inspecting bad output:
-
-- Rule application uses `(?<![\w.'!?])name(?![\w'!?])(?!\.[A-Z])`. The trailing
-  guard is load-bearing: without it a `Mathlib.Tactic` rule fires inside
-  `Mathlib.Tactic.Common` and corrupts unrelated imports. A *lowercase* next
-  component stays matchable, because `eqRec_heq_iff_heq.mp` really should be
-  rewritten by a rule targeting the stem — `.mp` is a projection, not a
-  namespace. Lean's UpperCamel-namespace convention separates the two, and the
-  same convention distinguishes `rename.namespace` from `rename.decl`.
-- Tokens in `_UNSAFE_REVERSE` (`rfl`, `simp`, `exact`, …) are never reversed;
-  rewriting them produces breakage unrelated to the mined repair.
-
----
-
-## Calibration loop
-
-```bash
-python -m layer4 replay --repo ./mathlib4 --pairs out/pairs.jsonl --limit 200
+```powershell
+.\run_pipeline.ps1 --status
 ```
 
-Checks out the post-adaptation tree at `toolchain_after`, applies the reverse
-edit in situ, runs `lake env lean` on that one file, parses the diagnostics, and
-compares observed against expected. `calibration.json` reports per label:
+Status is read-only, including while a run is active. A process-level lock
+rejects a second run or repair sharing the same state directory.
 
-- `precision` — match / (match + mismatch). How much to trust that free label.
-- `genuine_break_rate` — fraction where the reverse edit actually broke
-  something. Pairs scoring `no_error` are **not repair instances** and should be
-  dropped: the mined hunk was cosmetic or the breakage lived elsewhere.
+Repair saved outputs without running builds:
 
-Needs `elan`/`lake` and a warm cache, so it is sampled rather than exhaustive.
-The diagnostic parser and calibration maths are unit-tested against synthetic
-Lean output; the subprocess path is not exercised in CI here.
-
----
-
-## `#adaptation_note` is the best signal in the corpus
-
-mathlib marks toolchain workarounds in-source with a human-written sentence
-naming the upstream change that forced them:
-
-```lean
-#adaptation_note
-/-- `respectTransparency.types true` changes the auto-generated lemmas' signature -/
-set_option backward.isDefEq.respectTransparency.types false in
+```powershell
+.\run_pipeline.ps1 --repair-results
 ```
 
-247 of these were added in the v4.33.0-rc1 bump alone. They are natural-language
-ground truth about *why* something broke — strictly better than anything
-derivable from edit shape — and they are plumbed through to `notes` on both
-pairs and rules. This is under-exploited; it is probably the highest-value
-extension.
+Repair excludes questionable historical results instead of labeling them as
+successes or source failures. Missing/unverifiable native evidence is requeued;
+ambiguous adapted evidence is marked `build_inconclusive`. No compiler output is
+invented for excluded results, and the backup retains the previous reports.
 
----
+Useful controls:
 
-## Output schema
+```powershell
+# Safe small discovery test
+.\run_pipeline.ps1 --phase discover --repo HuangZhiming-the-Great/math
 
-`pairs.jsonl`, one object per repair:
+# Execute one pair from one repository
+.\run_pipeline.ps1 --phase run --repo HuangZhiming-the-Great/math --max-pairs 1 --acknowledge-untrusted-builds
 
-| field | meaning |
-|---|---|
-| `broken` / `fixed` | changed lines only, pre and post adaptation |
-| `broken_window` / `fixed_window` | contiguous file slices incl. context; `fixed_window` appears verbatim in the post-adaptation file (asserted in tests) so reversal can string-match it |
-| `label` / `labels` / `confidence` | primary, full multi-label set, rule confidence |
-| `expected_errors` | predicted `ErrorClass` values; verified by `replay` |
-| `evidence` | rule-specific detail — substitutions, simp deltas, set-options, attribute deltas, `notes` |
-| `decl` / `decl_kind` / `namespace` | enclosing declaration, resolved through the namespace stack |
-| `toolchain_before` / `toolchain_after` | e.g. `leanprover/lean4:v4.32.0` → `v4.33.0-rc1` |
-| `window_kind` / `window_key` / `commit` / `pr` / `date` | provenance |
-| `signature` / `duplicate_count` | dedup identity and true frequency |
+# Re-clone deleted repositories that still have pending or retryable pairs
+.\run_pipeline.ps1 --phase discover --restore-deleted-clones
 
-`rules.jsonl`: `rule_id`, `kind`, `label`, `forward`, `support`, `files`,
-`toolchains`, `provenance`, `notes`, `reversible`.
+# Retry orchestration failures (not genuine adapted-build errors)
+.\run_pipeline.ps1 --phase run --retry-failed --acknowledge-untrusted-builds
 
----
+# Retry pairs whose Lake environment adaptation previously failed
+.\run_pipeline.ps1 --phase run --retry-adapt-failures --acknowledge-untrusted-builds
 
-## Sample output
+# Recheck adapted builds that lacked reliable evidence or hit machine failures
+.\run_pipeline.ps1 --phase run --retry-build-inconclusive --acknowledge-untrusted-builds
 
-`sample_output/` contains real artifacts from a run against mathlib4:
-`windows.jsonl` (all 131 discovered windows), a slice of `pairs.jsonl`, the top
-induced rules, and the manifest with the label distribution.
+# Reconsider genuine failures and inconclusive native checks again
+.\run_pipeline.ps1 --phase run --retry-native-failures --acknowledge-untrusted-builds
 
-## Tests
-
-```bash
-python tests/test_layer4.py     # 42 tests
+# Skip cache downloads; native/adapted builds still run
+.\run_pipeline.ps1 --skip-cache --acknowledge-untrusted-builds
 ```
 
-Covers diff parsing, hunk splitting, per-side window reconstruction, the Lean
-lexer and context scanner, every taxonomy rule, rule induction and reversal
-(including the dotted-prefix regression), dedup/cap/split hygiene, and a full
-`discover → mine → rules → synth` run against a real git repo built in
-`setUp`.
+Throughput features are on by default and can be switched off individually:
+`--no-dep-mirror` (and `--dep-mirror-root PATH`), `--no-async-cleanup` (and
+`--trash-max-gb N`), `--no-fork-reuse`, `--no-timeout-prediction`; see
+"Throughput and disk usage".
 
----
+Timeout values are seconds and can be changed with `--cache-timeout`,
+`--native-timeout`, `--adapt-timeout`, and `--build-timeout`. The number of
+clean attempts for an inconclusive native check is controlled by
+`--native-attempts` (default: 2). Override the short temporary checkout root
+with `--worktrees-root` only if needed.
 
-## Gotchas encoded in the code
+## Layout
 
-- **`Mathlib/**/*.lean` as a git pathspec silently drops every top-level file.**
-  Git's default matcher is not wildmatch — that glob matches `Mathlib/Sub/B.lean`
-  but not `Mathlib/A.lean`; only `:(glob)` magic gives the expected semantics.
-  `mine.DEFAULT_PATHS` uses directory prefixes plus an extension filter. Worth
-  checking whether layers 1–3 have the same bug.
-- **Hunk splitting defaults to `gap=0`.** Git emits all `-` then all `+` for one
-  edit, so intervening context means two independent edits; merging them yields
-  a hunk with two unrelated labels. `--context` widens the diff, `gap` controls
-  rejoining.
-- **Hunk boundaries cut through attributes and simp lists.** `@[to_additive
-  (attr := implicit_reducible,` and `simp only [a, b,` arrive unterminated;
-  extraction tolerates this, and nested `attr := (...)` groups are flattened.
-  Without that, edits get misfiled as plain identifier renames.
-- **A closed tactic vocabulary is required.** Treating any lowercase line-head
-  as a tactic labels 6052 `set_option ... in` insertions as `tactic_added`.
+```text
+lean-version-build-pipeline/
+  commit_to_version.py       pair discovery
+  extract_lean_errors.py     Lean/Lake diagnostic parser
+  run_pipeline.py            resumable orchestrator
+  resource_management.py     yield-ordered scheduler, toolchain/cache limits
+  run_pipeline.ps1           Windows launcher
+  parsed-errors/             final JSON error reports only
+  pairs-without-lean-errors.jsonl
+                             analyzed pairs with zero Lean diagnostics
+  repair-diffs/              gzip old->new diffs of pairs with Lean errors
+  state/
+    progress.sqlite3         durable progress database
+    pairs/                   selected adjacent-version pairs
+    native-checks/           original-toolchain cache/build logs
+                             (provenance.json marks results copied from a fork)
+    runs/                    lakeva, cache, predict, seed, and adapted-build logs
+  %TEMP%/lvp/<state-id>/     short temporary worktrees; removed after each pair
+    .trash/                  finished worktrees awaiting background deletion
+  %USERPROFILE%/.cache/lvp-dep-mirrors/
+                             bare mirrors of Mathlib and common dependencies
+```
+
+`parsed-errors/` is intentionally kept separate from raw logs and state. A
+successful adapted build creates no file there. Native-build, adapter, and
+non-diagnostic process failures also create no file; their state and logs remain
+under `state/`. Existing pair-level wrapper reports are converted automatically
+the next time the pipeline starts.
+
+The no-error JSONL deliberately excludes pending pairs, native-invalid or
+native-inconclusive pairs, adapter failures, orchestration failures, empty or
+infrastructure-only builds, and pairs that produced a Lean error.
+It is regenerated atomically after each pair, at startup, normal completion, and interruption,
+so rerunning the pipeline does not create duplicate entries. Override its path
+with `--no-lean-errors-output` if needed.
+
+Only the repository's configured default build targets are tested; this is not
+a guarantee that every `.lean` file or project test was executed. Warnings,
+including `sorry` warnings, are not Lean errors.
+
+## Environment adapter (lakeva)
+
+The pipeline's adaptation step calls `lakeva adapt OLD NEW TARGET`. The adapter
+lives in `lake-env-adapter/` (Python package `lake_env_adapter`, launcher
+`lakeva.cmd`, tests under `lake-env-adapter/tests`). Put that directory on
+`PATH` or pass `--lakeva <path>\lakeva.cmd`. Its own README documents the
+dependency-selection protocol.
+
+## Dataset scripts
+
+- `build_finetuning_dataset.py` combines `parsed-errors/` into the diagnostic
+  chat corpus `lean-errors-finetune.jsonl`.
+- `build_repair_corpus.py` turns error pairs into verified minimal repairs
+  (`repair-corpus.jsonl`) by re-adapting the old commit and minimizing the
+  author's diff hunks against `lake build`.
+- `qc_and_split.py` applies the quality checks and the repository-grouped and
+  transition-held-out splits.
+- `normalize_diagnostics.py` normalizes diagnostics and groups them into
+  Drain-style templates.
+- `lpma_colab_finetune_compare.py` runs the QLoRA fine-tuning and baseline
+  comparison on a Colab T4.
+
+## Verification
+
+`python -m unittest discover -s tests -v` runs offline regression tests for
+parsing, classification, migration, concurrency, locking, resumption,
+dependency mirrors and seeding (with local Git repositories), background
+worktree deletion, fork reuse, and timeout prediction (with a fake `lake`).
+`python tests/smoke_real_pipeline.py` additionally runs real Git/Lake/lakeva
+checks on three small local repositories (compatible transition, API break,
+and broken native commit). It requires installed Lean v4.0.0 and v4.31.0 and
+the local adapter path recorded in that test.
+
+`python audit_results.py` is a read-only comparison of exported records against
+saved logs, native evidence, source-context shape, and database classifications.
+Run it while the pipeline is stopped for a consistent snapshot.
+
+## Output example
+
+```json
+{
+  "file": "Project/File.lean",
+  "line": 42,
+  "column": 7,
+  "message": "unknown identifier ...",
+  "source_found": true,
+  "error_line": "  exact source line containing the error",
+  "code": "four lines before\n...\nerror line\n...\nfour lines after",
+  "context_start_line": 38,
+  "context_end_line": 46,
+  "repo": "owner/repository",
+  "old_version": "leanprover/lean4:v4.19.0",
+  "new_version": "leanprover/lean4:v4.20.0",
+  "old_hash": "...",
+  "new_hash": "...",
+  "pair_index": 0,
+  "pair_id": "..."
+}
+```

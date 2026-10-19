@@ -1,0 +1,14 @@
+# Data, logs and state produced by the pipeline are not versioned.
+state/
+parsed-errors/
+repair-diffs/
+repair-corpus/
+splits/
+layer1-out/
+layer3-out/
+*.jsonl
+*.zip
+*.pdf
+__pycache__/
+*.egg-info/
+lake-env-adapter/dist/

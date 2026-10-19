@@ -1,2 +1,0 @@
-[console_scripts]
-layer4 = layer4.cli:main

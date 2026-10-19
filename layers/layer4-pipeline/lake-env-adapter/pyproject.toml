@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lake-env-adapter"
+version = "0.2.0"
+description = "Reconstruct Lean/Lake dependency environments for an exact target toolchain"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Lake Environment Adapter contributors" }]
+keywords = ["lean", "lean4", "lake", "dependencies", "version-adaptation"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+]
+dependencies = []
+
+[project.scripts]
+lake-env-adapter = "lake_env_adapter.cli:main"
+lakeva = "lake_env_adapter.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.8"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
